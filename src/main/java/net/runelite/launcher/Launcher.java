@@ -59,13 +59,14 @@ import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
-import javax.swing.UIManager;
 import joptsimple.ArgumentAcceptingOptionSpec;
 import joptsimple.OptionParser;
 import joptsimple.OptionSet;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.launcher.beans.Artifact;
 import net.runelite.launcher.beans.Bootstrap;
+import net.runelite.launcher.ui.LauncherFrame;
+import net.runelite.launcher.net.LauncherSocket;
 import org.slf4j.LoggerFactory;
 
 @Slf4j
@@ -153,15 +154,6 @@ public class Launcher
 		// Set all JVM params
 		setJvmParams(extraJvmParams);
 
-		try
-		{
-			UIManager.setLookAndFeel(UIManager.getCrossPlatformLookAndFeelClassName());
-		}
-		catch (Exception ex)
-		{
-			log.warn("Unable to set cross platform look and feel", ex);
-		}
-
 		LauncherFrame frame = new LauncherFrame();
 
 		Bootstrap bootstrap;
@@ -172,8 +164,7 @@ public class Launcher
 		catch (IOException | VerificationException | CertificateException | SignatureException | InvalidKeyException | NoSuchAlgorithmException ex)
 		{
 			log.error("error fetching bootstrap", ex);
-			frame.setVisible(false);
-			frame.dispose();
+			frame.close();
 			System.exit(-1);
 			return;
 		}
@@ -186,6 +177,8 @@ public class Launcher
 		// Clean out old artifacts from the repository
 		clean(bootstrap.getArtifacts());
 
+		frame.setMessage("Updating client...");
+
 		try
 		{
 			download(frame, bootstrap);
@@ -193,11 +186,12 @@ public class Launcher
 		catch (IOException ex)
 		{
 			log.error("unable to download artifacts", ex);
-			frame.setVisible(false);
-			frame.dispose();
+			frame.close();
 			System.exit(-1);
 			return;
 		}
+
+		frame.switchToSpinner();
 
 		List<File> results = Arrays.stream(bootstrap.getArtifacts())
 			.map(dep -> new File(REPO_DIR, dep.getName()))
@@ -210,20 +204,27 @@ public class Launcher
 		catch (VerificationException ex)
 		{
 			log.error("Unable to verify artifacts", ex);
-			frame.setVisible(false);
-			frame.dispose();
+			frame.close();
 			System.exit(-1);
 			return;
 		}
-
-		frame.setVisible(false);
-		frame.dispose();
 
 		final Collection<String> clientArgs = getClientArgs(options);
 
 		if (log.isDebugEnabled())
 		{
 			clientArgs.add("--debug");
+		}
+
+		try
+		{
+			final int port = startLauncherSocket(frame);
+			// Stream launcher socket port
+			extraJvmParams.add("-Drunelite.launcher.socket.port=" + port);
+		}
+		catch (IOException e)
+		{
+			log.warn("Error starting socket for launcher and client communication", e);
 		}
 
 		// packr doesn't let us specify command line arguments
@@ -249,6 +250,13 @@ public class Launcher
 				log.error("unable to launch client", ex);
 			}
 		}
+	}
+
+	private static int startLauncherSocket(LauncherFrame frame) throws IOException
+	{
+		final LauncherSocket launcherSocket = new LauncherSocket(frame);
+		launcherSocket.start();
+		return launcherSocket.getPort();
 	}
 
 	private static void setJvmParams(final Collection<String> params)
